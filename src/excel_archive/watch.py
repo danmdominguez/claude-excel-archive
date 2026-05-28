@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .copy import copy_database, default_snapshots_dir
 from .journal import ingest_sqlite
-from .paths import IdbDatabasePaths, pick_primary_database
+from .paths import IdbDatabasePaths, pick_primary_database, workbook_journal_dir
 from .match_workbook import (
     get_remembered_workbook_name,
     infer_workbook_names_from_blob,
@@ -46,6 +46,12 @@ class IdbWatcher:
         self.retention = retention
         self._workbook_copy_state = WorkbookCopyState()
         self._last_signature: tuple[int, int, int] | None = None
+
+    def _journal_root(self) -> Path | None:
+        """Per-workbook journal when --workbook is set; else archive-root journal."""
+        if self.workbook_path is not None:
+            return workbook_journal_dir(self.workbook_path)
+        return None
 
     def _resolve_db(self) -> IdbDatabasePaths | None:
         if self.database and self.database.exists():
@@ -88,6 +94,7 @@ class IdbWatcher:
             # Ingest may infer workbook name from blob text and update mappings.
             n = ingest_sqlite(
                 sqlite_path,
+                journal_root=self._journal_root(),
                 session_key=self.session_key,
                 workbook_name=wb_name,
                 idb_origin=db if self.infer_workbook else None,

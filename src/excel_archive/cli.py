@@ -34,6 +34,12 @@ from .daemon import (
 )
 from .retention import enforce_retention_for_workbook_root
 from .config_excel import load_config_for_workbook, load_global_config
+from .navigation import (
+    find_latest_tape,
+    iter_tapes,
+    refresh_archive_navigation,
+    write_archive_root_index,
+)
 
 app = typer.Typer(
     name="excel-archive",
@@ -400,6 +406,100 @@ def daemon_uninstall(
 
 
 @app.command()
+def status(
+    archive_root: Path | None = typer.Option(
+        None,
+        "--root",
+        help="Archive root (default: ~/Documents/ExcelArchive)",
+    ),
+) -> None:
+    """Show newest session tapes and where to open them."""
+    from datetime import datetime
+
+    root = archive_root or default_archive_root()
+    latest = find_latest_tape(root)
+    if latest is None:
+        console.print(f"[yellow]No tapes under[/yellow] {root}")
+        console.print("Run: excel-archive watch --workbook /path/to/model.xlsx")
+        raise typer.Exit(1)
+
+    console.print(f"[bold]Archive root[/bold] {root}")
+    console.print(f"[green]Latest tape[/green] {latest.tape}")
+    console.print(f"  Updated: {latest.updated_at:.0f}  Label: {latest.label}")
+    link = root / "latest.md"
+    if link.is_symlink():
+        console.print(f"[green]Shortcut[/green] {link} → {link.readlink()}")
+
+    table = Table("Updated (UTC)", "Tape", "Workbook folder")
+    for ref in iter_tapes(root)[:12]:
+        ts = datetime.utcfromtimestamp(ref.updated_at).strftime("%Y-%m-%d %H:%M")
+        wb = ref.workbook_root.name if ref.workbook_root else "(legacy root journal)"
+        table.add_row(ts, str(ref.tape.relative_to(root)), wb)
+    console.print(table)
+    console.print("\n[dim]Forensic: snapshots/ and workbook/ under each encoded folder.[/dim]")
+
+
+@app.command("open-latest")
+def cmd_open_latest(
+    archive_root: Path | None = typer.Option(None, "--root", help="Archive root"),
+    full: bool = typer.Option(False, "--full", help="Open session.full.tape.md instead"),
+) -> None:
+    """Open the newest session.tape.md in the default macOS app."""
+    import subprocess
+    import sys
+
+    root = archive_root or default_archive_root()
+    latest = find_latest_tape(root)
+    if latest is None:
+        console.print("[red]No session tape found.[/red]")
+        raise typer.Exit(1)
+    path = latest.tape_full if full and latest.tape_full else latest.tape
+    if sys.platform != "darwin":
+        console.print(path)
+        raise typer.Exit(0)
+    subprocess.run(["open", str(path)], check=False)
+    console.print(f"[green]Opened[/green] {path}")
+
+
+@app.command("index-rebuild")
+def cmd_index_rebuild(
+    archive_root: Path | None = typer.Option(None, "--root", help="Archive root"),
+) -> None:
+    """Regenerate archive index.md and latest.md symlink."""
+    root = archive_root or default_archive_root()
+    refresh_archive_navigation()
+    out = write_archive_root_index(root)
+    console.print(f"[green]Wrote[/green] {out}")
+    link = root / "latest.md"
+    if link.is_symlink():
+        console.print(f"[green]Symlink[/green] latest.md → {link.readlink()}")
+
+
+@app.command("retention-run-all")
+def retention_run_all(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Only print what would be deleted"),
+) -> None:
+    """Apply retention to every workbook folder under the archive root."""
+    from .navigation import discover_workbook_roots
+
+    roots = discover_workbook_roots()
+    legacy = default_archive_root() / "journal"
+    if legacy.is_dir():
+        console.print("[yellow]Note:[/yellow] legacy root journal/ is not pruned by this command.")
+    if not roots:
+        console.print("[yellow]No workbook archive folders found.[/yellow]")
+        raise typer.Exit(0)
+    for wb_root in roots:
+        # Best-effort: find a workbook path from folder name is not possible; use global retention cfg.
+        cfg = load_global_config().retention
+        report = enforce_retention_for_workbook_root(wb_root, cfg=cfg, dry_run=dry_run)
+        console.print(
+            f"{wb_root.name}: deleted_files={report.deleted_files} "
+            f"deleted_dirs={report.deleted_dirs}"
+        )
+
+
+@app.command()
 def retention_run(
     workbook: Path | None = typer.Option(
         None,
@@ -469,8 +569,8 @@ def config_init(
         json.dumps(
             {
                 "retention": {
-                    "keep_snapshot_dirs": 200,
-                    "keep_workbook_copies": 50,
+                    "keep_snapshot_dirs": 30,
+                    "keep_workbook_copies": 20,
                     "keep_sessions": 20,
                     "max_artifacts_mb": 2048,
                 },

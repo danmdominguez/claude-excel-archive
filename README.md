@@ -20,8 +20,14 @@ CLI entry point: **`excel-archive`**
 
 ```bash
 excel-archive watch --workbook "/full/path/My Model.xlsx" --copy-workbook
-# → ~/Documents/ExcelArchive/.../journal/default/session.tape.md
+# → ~/Documents/ExcelArchive/<workbook>/journal/default/session.tape.md
+
+excel-archive status          # where is my newest tape?
+excel-archive open-latest     # open it
+excel-archive index-rebuild   # refresh ~/Documents/ExcelArchive/index.md + latest.md
 ```
+
+**Start here in Finder:** `~/Documents/ExcelArchive/latest.md` or `index.md`.
 
 See [docs/CLAUDE_FOR_EXCEL.md](docs/CLAUDE_FOR_EXCEL.md) for full usage (retention, daemon, peers, snip notes, OTEL comparison).
 

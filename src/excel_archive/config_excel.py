@@ -12,8 +12,8 @@ from .paths import default_archive_root, workbook_root_dir
 
 @dataclass(frozen=True)
 class RetentionConfig:
-    keep_snapshot_dirs: int = 200
-    keep_workbook_copies: int = 50
+    keep_snapshot_dirs: int = 30
+    keep_workbook_copies: int = 20
     keep_sessions: int = 20
     max_artifacts_mb: int = 2048  # per session artifacts folder
 

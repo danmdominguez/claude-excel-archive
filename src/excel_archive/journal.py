@@ -16,7 +16,6 @@ from .paths import STORE_CHATS, default_archive_root
 from .snip import SNIP_SYSTEM_TOOLS, extract_snip_notes_from_blob, is_snipped_content
 from .match_workbook import infer_workbook_names_from_blob, pick_workbook_name, remember_workbook_name
 from .paths import IdbDatabasePaths
-from .index_md import write_index_md
 
 TEXT_BLOCK_RE = re.compile(r'\{"type"\s*:\s*"text"\s*,\s*"text"\s*:\s*"')
 
@@ -343,13 +342,9 @@ def ingest_sqlite(
             title=f"Session — {workbook_name or session_key}",
             source_note="Live capture from Excel IndexedDB (pre-snip merge policy).",
         )
-        # If this is a workbook-root journal, refresh index.md for navigation.
-        try:
-            wb_root = journal_root.parent
-            if (wb_root / "journal").is_dir():
-                write_index_md(wb_root)
-        except Exception:
-            pass
+        from .navigation import refresh_archive_navigation
+
+        refresh_archive_navigation(journal_root=journal_root)
     return len(new_rows)
 
 
