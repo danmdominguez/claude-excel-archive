@@ -1,0 +1,24 @@
+# Archives contain session data — never commit by default
+/ExcelArchive/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+.env
+.env.*
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Tools / OS
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+*.swp
+.scratch/

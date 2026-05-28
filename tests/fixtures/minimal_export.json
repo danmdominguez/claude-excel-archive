@@ -1,0 +1,36 @@
+{
+  "meta": {
+    "surface": "sheet",
+    "vendor": "m",
+    "platform": "mac",
+    "exportedAt": "2026-05-28T00:00:00.000Z"
+  },
+  "messages": [
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_fixture_empty",
+          "name": "get_cell_ranges",
+          "input": {}
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_fixture_full",
+          "name": "set_cell_range",
+          "input": { "range": "A1", "values": [[1]] }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "[snipped — context_snip applied]"
+        }
+      ]
+    }
+  ]
+}

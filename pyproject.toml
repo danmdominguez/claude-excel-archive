@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-excel-archive"
+version = "0.1.0"
+description = "Local-first archiver for Claude for Excel sessions (macOS IndexedDB)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "typer>=0.12",
+  "rich>=13",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+excel-archive = "excel_archive.cli:app"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
