@@ -68,6 +68,18 @@ def enforce_retention_for_workbook_root(
         deleted_dirs += dd
     notes.append(f"snapshots: kept={min(len(snap_dirs), cfg.keep_snapshot_dirs)} total={len(snap_dirs)}")
 
+    # 1b) forensic/history/ flat checkpoint files (ordinal filenames)
+    history = workbook_root / "forensic" / "history"
+    hist_files = _sorted_files(history, suffix=".sqlite3")
+    for fpath in hist_files[cfg.keep_forensic_checkpoints :]:
+        f, dd = _delete_path(fpath, dry_run=dry_run)
+        deleted_files += f
+        deleted_dirs += dd
+    notes.append(
+        f"forensic/history: kept={min(len(hist_files), cfg.keep_forensic_checkpoints)} "
+        f"total={len(hist_files)}"
+    )
+
     # 2) workbook/ copies
     wb_dir = workbook_root / "workbook"
     wb_files = _sorted_files(wb_dir, suffix=".xlsx")

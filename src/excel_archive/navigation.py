@@ -1,8 +1,7 @@
-"""Archive navigation: find latest tapes, root dashboard, latest.md symlink."""
+"""Archive navigation: find session tapes and generate archive dashboards."""
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -29,7 +28,9 @@ class TapeRef:
 def is_workbook_archive_root(path: Path) -> bool:
     """Encoded workbook folder under the archive root."""
     return path.is_dir() and path.name.startswith("_") and (
-        (path / "journal").is_dir() or (path / "snapshots").is_dir()
+        (path / "journal").is_dir()
+        or (path / "snapshots").is_dir()
+        or (path / "forensic").is_dir()
     )
 
 
@@ -106,16 +107,6 @@ def find_latest_tape(archive_root: Path | None = None) -> TapeRef | None:
     return tapes[0] if tapes else None
 
 
-def write_latest_symlink(archive_root: Path, tape: Path) -> Path:
-    """Point latest.md at the newest session tape (relative symlink)."""
-    link = archive_root / "latest.md"
-    rel = os.path.relpath(tape, archive_root)
-    if link.is_symlink() or link.is_file():
-        link.unlink()
-    link.symlink_to(rel)
-    return link
-
-
 def generate_archive_root_index_md(archive_root: Path | None = None) -> str:
     root = archive_root or default_archive_root()
     latest = find_latest_tape(root)
@@ -129,21 +120,27 @@ def generate_archive_root_index_md(archive_root: Path | None = None) -> str:
     lines.append(f"- **Generated**: {datetime.utcnow().isoformat()}Z")
     lines.append("")
 
-    lines.append("## Start here")
+    lines.append("## Layout (sort by name = sort by time)")
+    lines.append("")
+    lines.append("| Path | Role |")
+    lines.append("|------|------|")
+    lines.append("| `<workbook>/journal/<session>/events.jsonl` | **Append-only** event log (authoritative merge)") 
+    lines.append("| `<workbook>/journal/<session>/session.tape.md` | Readable tape (regenerated from journal)") 
+    lines.append("| `<workbook>/forensic/live/IndexedDB.sqlite3` | Rolling IDB image (overwritten each poll)") 
+    lines.append("| `<workbook>/forensic/history/YYYYMMDD_HHMM_*_IndexedDB.sqlite3` | Optional checkpoints (flat files)") 
+    lines.append("| `<workbook>/workbook/YYYYMMDD_HHMM_*_workbook.xlsx` | Workbook copies") 
+    lines.append("| `<workbook>/snapshots/` | Legacy per-poll folders only (`--snapshot-style per-poll`)") 
+    lines.append("")
+
+    lines.append("## Most recently updated tape")
     lines.append("")
     if latest:
         ts = datetime.utcfromtimestamp(latest.updated_at).isoformat() + "Z"
         rel = latest.tape.relative_to(root)
-        lines.append(f"- **Latest session tape** (`{ts}`): [`{rel}`]({rel})")
-        lines.append(f"- **Shortcut**: [`latest.md`](latest.md) → same file")
+        lines.append(f"- **`{ts}`** — [`{rel}`]({rel})")
         if latest.tape_full and latest.tape_full.is_file():
             rel_full = latest.tape_full.relative_to(root)
-            lines.append(f"- **Full tape**: [`{rel_full}`]({rel_full})")
-        lines.append("")
-        lines.append(
-            "> Readable tapes are **best-effort**. Forensic sources: `snapshots/` sqlite copies "
-            "and `workbook/` `.xlsx` copies under each workbook folder."
-        )
+            lines.append(f"- Full tape: [`{rel_full}`]({rel_full})")
     else:
         lines.append("_No session tapes yet. Run `excel-archive watch --workbook /path/to/file.xlsx`._")
     lines.append("")
@@ -184,21 +181,25 @@ def generate_archive_root_index_md(archive_root: Path | None = None) -> str:
     lines.append("```bash")
     lines.append("excel-archive status          # show newest tape paths")
     lines.append("excel-archive open-latest     # open newest tape in default app")
-    lines.append("excel-archive index-rebuild   # refresh this file + latest.md")
+    lines.append("excel-archive index-rebuild   # refresh this file")
     lines.append("```")
     lines.append("")
 
     return "\n".join(lines)
 
 
+def remove_legacy_latest_symlink(archive_root: Path | None = None) -> None:
+    link = (archive_root or default_archive_root()) / "latest.md"
+    if link.is_symlink() or link.is_file():
+        link.unlink(missing_ok=True)
+
+
 def write_archive_root_index(archive_root: Path | None = None) -> Path:
     root = archive_root or default_archive_root()
     root.mkdir(parents=True, exist_ok=True)
+    remove_legacy_latest_symlink(root)
     out = root / "index.md"
     out.write_text(generate_archive_root_index_md(root), encoding="utf-8")
-    latest = find_latest_tape(root)
-    if latest:
-        write_latest_symlink(root, latest.tape)
     return out
 
 

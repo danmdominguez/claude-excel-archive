@@ -5,8 +5,11 @@ from __future__ import annotations
 import shutil
 import time
 from pathlib import Path
+from typing import Literal
 
 from .paths import IdbDatabasePaths, default_archive_root
+
+SnapshotStyle = Literal["rolling", "per-poll", "off"]
 
 
 def _safe_name(name: str) -> str:
@@ -53,6 +56,45 @@ def copy_database(
         f"copied_at={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n",
         encoding="utf-8",
     )
+    return out
+
+
+def copy_database_rolling(source: IdbDatabasePaths, live_dir: Path) -> Path:
+    """
+    Overwrite forensic/live/ with the latest sqlite + WAL sidecars.
+
+    One stable directory per workbook — journal append (events.jsonl) remains the
+    ordinal, growing record; this is only the latest recoverable IDB image.
+    """
+    live_dir.mkdir(parents=True, exist_ok=True)
+    for src in source.sidecar_paths():
+        shutil.copy2(src, live_dir / src.name)
+    meta = live_dir / "source.txt"
+    meta.write_text(
+        f"sqlite={source.sqlite}\n"
+        f"site={source.site_folder}\n"
+        f"updated_at={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n",
+        encoding="utf-8",
+    )
+    return live_dir
+
+
+def copy_database_checkpoint(
+    source: IdbDatabasePaths,
+    history_dir: Path,
+    *,
+    workbook_name: str | None = None,
+) -> Path:
+    """
+    Fallback: one timestamped sqlite file (no subfolder), sorts ordinally by name.
+
+    Use for `excel-archive snapshot` or explicit checkpoints — not every watch poll.
+    """
+    history_dir.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y%m%d_%H%M")
+    wb = _safe_name(workbook_name) if workbook_name else "Excel"
+    out = history_dir / f"{ts}_{wb}_IndexedDB.sqlite3"
+    shutil.copy2(source.sqlite, out)
     return out
 
 

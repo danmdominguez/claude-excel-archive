@@ -20,14 +20,24 @@ CLI entry point: **`excel-archive`**
 
 ```bash
 excel-archive watch --workbook "/full/path/My Model.xlsx" --copy-workbook
-# → ~/Documents/ExcelArchive/<workbook>/journal/default/session.tape.md
+# → journal/default/events.jsonl (append-only) + session.tape.md + forensic/live/
 
-excel-archive status          # where is my newest tape?
+excel-archive status          # newest tape by mtime
 excel-archive open-latest     # open it
-excel-archive index-rebuild   # refresh ~/Documents/ExcelArchive/index.md + latest.md
+excel-archive snapshot --workbook ...   # optional flat checkpoint in forensic/history/
 ```
 
-**Start here in Finder:** `~/Documents/ExcelArchive/latest.md` or `index.md`.
+**Layout per workbook** (sort by folder/file name = chronological):
+
+| Path | Purpose |
+|------|---------|
+| `journal/<session>/events.jsonl` | Append-only capture (primary) |
+| `journal/<session>/session.tape.md` | Readable tape |
+| `forensic/live/IndexedDB.sqlite3` | Rolling IDB copy (overwritten) |
+| `forensic/history/YYYYMMDD_HHMM_*_IndexedDB.sqlite3` | Manual checkpoints only |
+| `workbook/YYYYMMDD_HHMM_*_workbook.xlsx` | Workbook copies |
+
+Legacy `snapshots/*_snapshot/` folders require `--snapshot-style per-poll`.
 
 See [docs/CLAUDE_FOR_EXCEL.md](docs/CLAUDE_FOR_EXCEL.md) for full usage (retention, daemon, peers, snip notes, OTEL comparison).
 

@@ -74,6 +74,19 @@ def workbook_journal_dir(workbook_path: Path, *, archive_root: Path | None = Non
     return workbook_root_dir(workbook_path, archive_root=archive_root) / "journal"
 
 
+def workbook_forensic_live_dir(workbook_path: Path, *, archive_root: Path | None = None) -> Path:
+    return workbook_root_dir(workbook_path, archive_root=archive_root) / "forensic" / "live"
+
+
+def workbook_forensic_history_dir(workbook_path: Path, *, archive_root: Path | None = None) -> Path:
+    return workbook_root_dir(workbook_path, archive_root=archive_root) / "forensic" / "history"
+
+
+def archive_forensic_live_dir(archive_root: Path | None = None) -> Path:
+    base = archive_root or default_archive_root()
+    return base / "forensic" / "live"
+
+
 def discover_indexeddb_databases() -> list[IdbDatabasePaths]:
     """Find IndexedDB.sqlite3 files under Excel WebKit WebsiteData."""
     if platform.system() != "Darwin":

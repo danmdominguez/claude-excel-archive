@@ -10,17 +10,20 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from .copy import copy_database, default_snapshots_dir
+from .copy import default_snapshots_dir
 from .idb_extract import extract_from_snapshot_dir, extract_from_sqlite, write_extract_artifact
 from .merge import diff_export_vs_session, write_diff_report
 from .paths import (
     WEBKIT_WEBSITE_DATA,
     discover_indexeddb_databases,
     pick_primary_database,
+    workbook_forensic_history_dir,
     workbook_journal_dir,
     workbook_snapshots_dir,
     default_archive_root,
+    archive_forensic_live_dir,
 )
+from .copy import SnapshotStyle, copy_database, copy_database_checkpoint, copy_database_rolling
 from .journal import default_journal_dir, ingest_sqlite, rebuild_journal_from_snapshots
 from .render_tape import export_json_to_tape, write_session_tape
 from .watch import IdbWatcher
@@ -88,10 +91,21 @@ def snapshot(
         console.print("[red]No Excel IndexedDB found.[/red] Open Claude for Excel at least once.")
         raise typer.Exit(1)
 
-    out_dir = dest or (workbook_snapshots_dir(workbook) if workbook else default_snapshots_dir())
     wb_name = workbook.name if workbook else None
-    path = copy_database(db, out_dir, workbook_name=wb_name)
-    console.print(f"[green]Snapshot:[/green] {path}")
+    if workbook is not None:
+        from .paths import workbook_forensic_live_dir
+
+        history = dest or workbook_forensic_history_dir(workbook)
+        path = copy_database_checkpoint(db, history, workbook_name=wb_name)
+        copy_database_rolling(db, workbook_forensic_live_dir(workbook))
+        console.print(f"[green]Checkpoint:[/green] {path}")
+        console.print("[green]forensic/live[/green] updated")
+    else:
+        out_dir = dest or default_snapshots_dir()
+        from .copy import copy_database as _copy_database
+
+        path = _copy_database(db, out_dir, workbook_name=wb_name)
+        console.print(f"[green]Snapshot:[/green] {path}")
 
 
 @app.command()
@@ -117,22 +131,33 @@ def watch(
         "--infer-workbook/--no-infer-workbook",
         help="Best-effort infer workbook filename from IDB blob (used for snapshot naming and tape title)",
     ),
-    dest: Path | None = typer.Option(None, "--dest", help="Snapshots directory"),
+    dest: Path | None = typer.Option(None, "--dest", help="Override output dir (per-poll mode only)"),
+    snapshot_style: SnapshotStyle | None = typer.Option(
+        None,
+        "--snapshot-style",
+        help="rolling=forensic/live + journal append; per-poll=legacy snapshot folders; off=journal only",
+    ),
     no_journal: bool = typer.Option(False, "--no-journal", help="Only copy sqlite, skip JSONL journal"),
     session: str = typer.Option("default", "--session", help="Journal subdirectory name"),
 ) -> None:
-    """Poll IndexedDB WAL changes; snapshot + render Markdown tape journal."""
+    """Poll IndexedDB WAL changes; append journal + rolling forensic copy."""
     wb_name = workbook.name if workbook else None
-    resolved_dest = dest or (workbook_snapshots_dir(workbook) if workbook else None)
+    style: SnapshotStyle = "rolling"
+    if snapshot_style is not None:
+        style = snapshot_style
+    elif workbook is not None:
+        style = load_config_for_workbook(workbook).snapshot_style  # type: ignore[assignment]
+    resolved_dest = dest or (workbook_snapshots_dir(workbook) if workbook and style == "per-poll" else None)
     watcher = IdbWatcher(
         interval_sec=interval,
-        dest_root=resolved_dest,
+        dest_root=resolved_dest or default_snapshots_dir(),
         journal=not no_journal,
         session_key=session,
         workbook_name=wb_name,
         infer_workbook=infer_workbook,
         workbook_path=workbook,
         copy_workbook_file=bool(workbook and copy_workbook_file),
+        snapshot_style=style,
     )
     db = watcher._resolve_db()
     if not db:
@@ -140,10 +165,16 @@ def watch(
         raise typer.Exit(1)
     journal_dir = (workbook_journal_dir(workbook) if workbook else default_journal_dir()) / session
     console.print(f"Watching {db.sqlite}")
-    console.print(f"  snapshots → {watcher.dest_root}")
+    if style == "rolling":
+        from .paths import workbook_forensic_live_dir
+
+        live = workbook_forensic_live_dir(workbook) if workbook else archive_forensic_live_dir()
+        console.print(f"  forensic  → {live}/IndexedDB.sqlite3 (rolling)")
+    elif style == "per-poll":
+        console.print(f"  snapshots → {watcher.dest_root}")
     if not no_journal:
-        console.print(f"  journal   → {journal_dir}/session.tape.md (primary)")
-        console.print(f"              {journal_dir}/events.jsonl (merge log)")
+        console.print(f"  journal   → {journal_dir}/events.jsonl (append-only)")
+        console.print(f"              {journal_dir}/session.tape.md (readable tape)")
         if infer_workbook and workbook is None:
             console.print(f"  mappings  → {default_mapping_path()}")
     try:
@@ -426,9 +457,6 @@ def status(
     console.print(f"[bold]Archive root[/bold] {root}")
     console.print(f"[green]Latest tape[/green] {latest.tape}")
     console.print(f"  Updated: {latest.updated_at:.0f}  Label: {latest.label}")
-    link = root / "latest.md"
-    if link.is_symlink():
-        console.print(f"[green]Shortcut[/green] {link} → {link.readlink()}")
 
     table = Table("Updated (UTC)", "Tape", "Workbook folder")
     for ref in iter_tapes(root)[:12]:
@@ -470,9 +498,6 @@ def cmd_index_rebuild(
     refresh_archive_navigation()
     out = write_archive_root_index(root)
     console.print(f"[green]Wrote[/green] {out}")
-    link = root / "latest.md"
-    if link.is_symlink():
-        console.print(f"[green]Symlink[/green] latest.md → {link.readlink()}")
 
 
 @app.command("retention-run-all")
@@ -568,8 +593,10 @@ def config_init(
     path.write_text(
         json.dumps(
             {
+                "snapshot_style": "rolling",
                 "retention": {
                     "keep_snapshot_dirs": 30,
+                    "keep_forensic_checkpoints": 30,
                     "keep_workbook_copies": 20,
                     "keep_sessions": 20,
                     "max_artifacts_mb": 2048,

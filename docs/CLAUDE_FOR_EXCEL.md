@@ -27,7 +27,9 @@ The add-in **intentionally** drops history in two places:
 | Capture **while the session runs**, before or between snips | `excel-archive watch` (default **2s** poll) |
 | Keep an **append-only history** that snip cannot rewrite | `~/Documents/ExcelArchive/journal/<session>/events.jsonl` |
 | **First full copy wins** — later snipped replays are ignored | Journal merge policy in `journal.py` |
-| Forensic backup of raw IDB | `snapshots/<timestamp>/` sqlite copies |
+| Forensic backup of raw IDB | `forensic/live/IndexedDB.sqlite3` (rolling; overwritten) |
+| Optional IDB checkpoints | `forensic/history/YYYYMMDD_HHMM_*_IndexedDB.sqlite3` (flat files; `excel-archive snapshot`) |
+| Legacy per-poll folders | `snapshots/<timestamp>/` only with `--snapshot-style per-poll` |
 
 Run during every long Excel session:
 
