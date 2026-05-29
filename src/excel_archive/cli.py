@@ -46,6 +46,8 @@ from .navigation import (
     refresh_archive_navigation,
     write_archive_root_index,
 )
+from .runtime import is_frozen
+from .updater import UpdateError, discover_repo_root, local_version_label, run_update, set_repo_root
 
 app = typer.Typer(
     name="excel-archive",
@@ -506,6 +508,72 @@ def analyze_session(
     if json_out:
         json_out.write_text(json.dumps(analysis.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
         console.print(f"\n[green]Wrote[/green] {json_out}")
+
+
+@app.command()
+def update(
+    check_only: bool = typer.Option(
+        False,
+        "--check-only",
+        help="Only check remote; do not pull or reinstall",
+    ),
+    branch: str | None = typer.Option(
+        None,
+        "--branch",
+        help="Git branch to track (default: main or app.json)",
+    ),
+    remote: str | None = typer.Option(
+        None,
+        "--remote",
+        help="Git remote name (default: origin)",
+    ),
+    repo: Path | None = typer.Option(
+        None,
+        "--repo",
+        help="Path to claude-excel-archive clone (overrides discovery)",
+    ),
+) -> None:
+    """Pull latest from git and refresh install (editable or /Applications .app)."""
+    try:
+        resolved_repo = repo.expanduser().resolve() if repo else discover_repo_root()
+        if resolved_repo is None:
+            console.print(
+                "[red]No git repo found.[/red] Set EXCEL_ARCHIVE_REPO, use --repo, "
+                "or add repo_root to ~/Documents/ExcelArchive/app.json"
+            )
+            raise typer.Exit(1)
+        status, post = run_update(
+            check_only=check_only,
+            frozen=is_frozen(),
+            branch=branch,
+            remote=remote,
+            repo=resolved_repo,
+        )
+        console.print(f"[dim]{local_version_label(resolved_repo)}[/dim]")
+        console.print(status.summary)
+        if post:
+            console.print(f"[green]{post}[/green]")
+        elif status.behind and check_only:
+            console.print("[yellow]Run without --check-only to pull and reinstall.[/yellow]")
+    except UpdateError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command("set-repo")
+def set_repo(
+    path: Annotated[
+        Path,
+        typer.Argument(help="Path to claude-excel-archive git clone"),
+    ],
+) -> None:
+    """Save repo path for menu bar Check for Updates."""
+    try:
+        resolved = set_repo_root(path)
+        console.print(f"[green]Saved repo root:[/green] {resolved}")
+    except UpdateError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
 
 
 @app.command()

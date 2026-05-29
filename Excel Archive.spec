@@ -1,9 +1,14 @@
 # PyInstaller spec for Excel Archive menu bar app.
 # Build: .venv/bin/pyinstaller "Excel Archive.spec"
 
+import os
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all
+
+_git_sha = os.environ.get("EXCEL_ARCHIVE_GIT_SHA", "").strip()
+_bundle_version = _git_sha or "0.1.0"
+_short_version = f"0.1.0+{_git_sha}" if _git_sha else "0.1.0"
 
 block_cipher = None
 
@@ -79,8 +84,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "Excel Archive",
         "CFBundleDisplayName": "Excel Archive",
-        "CFBundleShortVersionString": "0.1.0",
-        "CFBundleVersion": "0.1.0",
+        "CFBundleShortVersionString": _short_version,
+        "CFBundleVersion": _bundle_version,
         "LSUIElement": True,
         "NSHighResolutionCapable": True,
     },

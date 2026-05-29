@@ -13,6 +13,13 @@ fi
 .venv/bin/pip install -q pyinstaller
 
 rm -rf build dist
+
+GIT_SHA=""
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || true)"
+fi
+export EXCEL_ARCHIVE_GIT_SHA="${GIT_SHA}"
+
 .venv/bin/pyinstaller "Excel Archive.spec" --noconfirm
 
 if [[ ! -d "dist/${APP_NAME}" ]]; then
@@ -23,6 +30,13 @@ fi
 # Ensure menu-bar-only (no Dock icon)
 /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "dist/${APP_NAME}/Contents/Info.plist" 2>/dev/null \
   || /usr/libexec/PlistBuddy -c "Set :LSUIElement true" "dist/${APP_NAME}/Contents/Info.plist"
+
+if [[ -n "${GIT_SHA}" ]]; then
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${GIT_SHA}" "dist/${APP_NAME}/Contents/Info.plist" 2>/dev/null \
+    || true
+  /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 0.1.0+${GIT_SHA}" "dist/${APP_NAME}/Contents/Info.plist" 2>/dev/null \
+    || true
+fi
 
 echo "Installing to ${INSTALL_PATH} ..."
 rm -rf "${INSTALL_PATH}"

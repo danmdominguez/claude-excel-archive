@@ -22,6 +22,15 @@ from .runtime import (
 )
 from .watch_lock import default_watch_lock_path
 from .resources import menu_icon_path
+from .runtime import is_frozen
+from .updater import (
+    UpdateError,
+    check_for_updates,
+    discover_repo_root,
+    local_version_label,
+    run_update,
+    set_repo_root,
+)
 
 
 def _notify(title: str, subtitle: str = "") -> None:
@@ -55,6 +64,9 @@ class ExcelArchiveApp(rumps.App):
             rumps.MenuItem("Open Archive Folder", callback=self.on_open_archive),
             rumps.MenuItem("Rebuild Archive Index", callback=self.on_rebuild_index),
             None,
+            rumps.MenuItem("Check for Updates…", callback=self.on_check_updates),
+            rumps.MenuItem("Set Repo Path…", callback=self.on_set_repo_path),
+            None,
             rumps.MenuItem("Permissions Help…", callback=self.on_permissions),
             None,
             rumps.MenuItem("Quit", callback=self.on_quit),
@@ -84,6 +96,7 @@ class ExcelArchiveApp(rumps.App):
             parts.append(active.display[:40])
         if latest:
             parts.append(f"tape: {latest.workbook_root.name if latest.workbook_root else 'legacy'}/{latest.session}")
+        parts.append(local_version_label(discover_repo_root()))
         self._status_item.title = " · ".join(parts) if parts else "Status: —"
         # Menu bar shows spreadsheet icon only (no title text).
         self.title = None
@@ -162,6 +175,70 @@ class ExcelArchiveApp(rumps.App):
                 self._refresh_status()
             except Exception as exc:
                 _notify("Index failed", str(exc)[:80])
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_check_updates(self, _) -> None:
+        def worker() -> None:
+            try:
+                repo = discover_repo_root()
+                if repo is None:
+                    raise UpdateError(
+                        "No git repo found. Use Set Repo Path… or set EXCEL_ARCHIVE_REPO."
+                    )
+                status = check_for_updates(repo)
+                if status.up_to_date:
+                    rumps.alert("Up to date", status.summary)
+                    _notify("Up to date", status.summary)
+                    self._refresh_status()
+                    return
+                clicked = rumps.alert(
+                    "Update available",
+                    f"{status.summary}\n\nPull and reinstall now?",
+                    ok="Update",
+                    cancel="Cancel",
+                )
+                if clicked != 1000:  # NSAlertFirstButtonReturn (Update)
+                    return
+                self.on_stop_watch(None)
+                _, post = run_update(check_only=False, frozen=is_frozen(), repo=repo)
+                if post:
+                    rumps.alert("Update complete", post)
+                    _notify("Update complete", "Restart the app")
+                self._refresh_status()
+            except UpdateError as exc:
+                rumps.alert("Update failed", str(exc))
+                _notify("Update failed", str(exc)[:80])
+            except Exception as exc:
+                rumps.alert("Update failed", str(exc)[:500])
+                _notify("Update failed", str(exc)[:80])
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_set_repo_path(self, _) -> None:
+        def worker() -> None:
+            try:
+                proc = subprocess.run(
+                    [
+                        "osascript",
+                        "-e",
+                        'POSIX path of (choose folder with prompt "Select claude-excel-archive clone")',
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if proc.returncode != 0 or not proc.stdout.strip():
+                    return
+                chosen = Path(proc.stdout.strip())
+                resolved = set_repo_root(chosen)
+                rumps.alert("Repo path saved", str(resolved))
+                _notify("Repo path saved", resolved.name)
+                self._refresh_status()
+            except UpdateError as exc:
+                rumps.alert("Invalid repo", str(exc))
+            except Exception as exc:
+                rumps.alert("Failed", str(exc)[:500])
 
         threading.Thread(target=worker, daemon=True).start()
 

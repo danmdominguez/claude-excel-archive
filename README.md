@@ -53,6 +53,8 @@ open "dist/Excel Archive.app"
 
 Grant **Full Disk Access** to Terminal or the `.app` if capture is empty.
 
+**Updates (git):** In the menu bar app, use **Check for Updates…** to `git pull` from your local clone and reinstall (PyInstaller rebuild for the `.app`, or `pip install -e` when running from source). Set the clone path with **Set Repo Path…**, `EXCEL_ARCHIVE_REPO`, or `repo_root` in `~/Documents/ExcelArchive/app.json`. CLI: `excel-archive update` / `excel-archive update --check-only`.
+
 ## Documentation
 
 | Doc | Topic |
