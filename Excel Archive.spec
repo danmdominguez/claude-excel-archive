@@ -2,9 +2,23 @@
 # Build: .venv/bin/pyinstaller "Excel Archive.spec"
 
 import os
+import subprocess
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all
+
+# Strip provenance/Finder xattrs before PyInstaller's bundle codesign (avoids detritus error).
+import PyInstaller.utils.osx as _pi_osx
+
+_orig_sign_binary = _pi_osx.sign_binary
+
+
+def _strip_then_sign_binary(filename, identity=None, entitlements_file=None, deep=False):
+    subprocess.run(["xattr", "-cr", str(filename)], check=False)
+    return _orig_sign_binary(filename, identity, entitlements_file, deep)
+
+
+_pi_osx.sign_binary = _strip_then_sign_binary
 
 _git_sha = os.environ.get("EXCEL_ARCHIVE_GIT_SHA", "").strip()
 _bundle_version = _git_sha or "0.1.0"
