@@ -41,6 +41,18 @@ Legacy `snapshots/*_snapshot/` folders require `--snapshot-style per-poll`.
 
 See [docs/CLAUDE_FOR_EXCEL.md](docs/CLAUDE_FOR_EXCEL.md) for full usage (retention, daemon, peers, snip notes, OTEL comparison).
 
+### Menu bar (test before DMG)
+
+```bash
+./scripts/run_menu_bar_dev.sh          # from source
+# or: pip install -e ".[app]" && excel-archive-app
+
+./scripts/build_app.sh               # py2app → dist/Excel Archive.app
+open "dist/Excel Archive.app"
+```
+
+Grant **Full Disk Access** to Terminal or the `.app` if capture is empty.
+
 ## Documentation
 
 | Doc | Topic |

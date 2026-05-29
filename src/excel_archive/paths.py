@@ -74,6 +74,43 @@ def workbook_journal_dir(workbook_path: Path, *, archive_root: Path | None = Non
     return workbook_root_dir(workbook_path, archive_root=archive_root) / "journal"
 
 
+def encode_unsaved_workbook(name: str) -> str:
+    """Folder name for unsaved workbooks (e.g. Book3) with no filesystem path."""
+    safe = _SANITIZE_SEGMENT_RE.sub("_", name.strip())
+    return f"_unsaved_{safe}"
+
+
+def encode_workbook_filename(filename: str) -> str:
+    """Folder name when only a workbook filename is known (no full path)."""
+    safe = _SANITIZE_SEGMENT_RE.sub("_", filename.strip())
+    return f"_workbook_{safe}"
+
+
+def workbook_root_for_name(workbook_name: str, *, archive_root: Path | None = None) -> Path:
+    """
+    Archive folder for a workbook identity from IndexedDB (initial_state.fileName).
+
+    - Unsaved names (Book3) → `_unsaved_Book3/`
+    - Saved filenames (*.xlsx) → `_workbook_EF_Shop_Model_DD.xlsx/`
+    """
+    root = archive_root or default_archive_root()
+    name = (workbook_name or "").strip()
+    if not name:
+        return root / "_unknown_workbook"
+    lower = name.lower()
+    if lower.endswith(".xlsx") or lower.endswith(".xlsm") or lower.endswith(".xls"):
+        return root / encode_workbook_filename(name)
+    return root / encode_unsaved_workbook(name)
+
+
+def journal_dir_for_workbook_name(
+    workbook_name: str,
+    *,
+    archive_root: Path | None = None,
+) -> Path:
+    return workbook_root_for_name(workbook_name, archive_root=archive_root) / "journal"
+
+
 def workbook_forensic_live_dir(workbook_path: Path, *, archive_root: Path | None = None) -> Path:
     return workbook_root_dir(workbook_path, archive_root=archive_root) / "forensic" / "live"
 
@@ -134,3 +171,96 @@ def pick_primary_database(databases: list[IdbDatabasePaths] | None = None) -> Id
         return wal_size * 10 + sql_size
 
     return max(dbs, key=score)
+
+
+def database_has_chats_store(db: IdbDatabasePaths) -> bool:
+    """True if this IndexedDB contains a `chats` object store with at least one row."""
+    import sqlite3
+
+    if not db.sqlite.is_file():
+        return False
+    try:
+        conn = sqlite3.connect(f"file:{db.sqlite}?mode=ro", uri=True)
+        try:
+            stores = {
+                str(r[1]).lower(): int(r[0])
+                for r in conn.execute("SELECT id, name FROM ObjectStoreInfo")
+            }
+            chat_id = stores.get("chats", STORE_CHATS)
+            row = conn.execute(
+                "SELECT 1 FROM Records WHERE objectStoreID = ? LIMIT 1",
+                (chat_id,),
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return False
+
+
+def pick_database_for_active_workbook(
+    active_workbook_name: str | None,
+    databases: list[IdbDatabasePaths] | None = None,
+) -> tuple[IdbDatabasePaths | None, str | None]:
+    """
+    Choose IndexedDB to watch/ingest.
+
+    Prefers databases with a `chats` store, then most recently modified WAL.
+    When active_workbook_name is set, prefer a DB whose chat records mention that name.
+    Returns (database, warning_message).
+    """
+    dbs = databases if databases is not None else discover_indexeddb_databases()
+    chat_dbs = [db for db in dbs if database_has_chats_store(db)]
+    if not chat_dbs:
+        primary = pick_primary_database(dbs)
+        if primary:
+            return primary, "No IndexedDB with chats store found; using largest WAL database."
+        return None, "No Excel IndexedDB databases found."
+
+    if not active_workbook_name:
+        return _pick_most_recent_chat_db(chat_dbs), None
+
+    from .journal import iter_chat_records, resolve_record_workbook
+    import sqlite3
+
+    name_lower = active_workbook_name.strip().lower()
+    matches: list[tuple[int, IdbDatabasePaths]] = []
+    for db in chat_dbs:
+        try:
+            conn = sqlite3.connect(f"file:{db.sqlite}?mode=ro", uri=True)
+            try:
+                store_names = {
+                    int(r[0]): str(r[1]) for r in conn.execute("SELECT id, name FROM ObjectStoreInfo")
+                }
+                for rec in iter_chat_records(conn, store_names)[:8]:
+                    wb = resolve_record_workbook(rec.data).lower()
+                    if wb == name_lower or name_lower in wb:
+                        wal_mtime = int(db.wal.stat().st_mtime) if db.wal and db.wal.is_file() else 0
+                        matches.append((wal_mtime, db))
+                        break
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            continue
+
+    if matches:
+        matches.sort(key=lambda x: x[0], reverse=True)
+        return matches[0][1], None
+
+    chosen = _pick_most_recent_chat_db(chat_dbs)
+    warn = (
+        f"Active workbook '{active_workbook_name}' not found in any chats store; "
+        f"using most recent chat DB. Save the workbook or run a separate Excel profile "
+        f"if sessions may mix."
+    )
+    return chosen, warn
+
+
+def _pick_most_recent_chat_db(dbs: list[IdbDatabasePaths]) -> IdbDatabasePaths:
+    def mtime_score(db: IdbDatabasePaths) -> tuple[int, int]:
+        wal_mtime = int(db.wal.stat().st_mtime) if db.wal and db.wal.is_file() else 0
+        sql_mtime = int(db.sqlite.stat().st_mtime) if db.sqlite.is_file() else 0
+        sql_size = db.sqlite.stat().st_size if db.sqlite.is_file() else 0
+        return wal_mtime, sql_size
+
+    return max(dbs, key=mtime_score)

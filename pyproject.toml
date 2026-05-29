@@ -15,15 +15,21 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5"]
+app = ["rumps>=0.4.0"]
+build = ["py2app>=0.28", "pyinstaller>=6.0"]
 
 [project.scripts]
 excel-archive = "excel_archive.cli:app"
+excel-archive-app = "excel_archive.app:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+excel_archive = ["resources/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

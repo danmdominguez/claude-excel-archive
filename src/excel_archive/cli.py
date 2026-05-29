@@ -28,6 +28,9 @@ from .journal import default_journal_dir, ingest_sqlite, rebuild_journal_from_sn
 from .render_tape import export_json_to_tape, write_session_tape
 from .watch import IdbWatcher
 from .match_workbook import default_mapping_path
+from .workbook_attribution import analyze_session_events, load_events_jsonl
+from .workbook_migration import find_unsaved_roots, migrate_unsaved_to_path
+from .active_workbook import resolve_active_workbook
 from .daemon import (
     build_plist,
     install_launchagent,
@@ -119,12 +122,17 @@ def watch(
     workbook: Path | None = typer.Option(
         None,
         "--workbook",
-        help="Workbook path used to group output under an encoded folder name",
+        help="Optional saved workbook path — .xlsx copies and forensic paths only (not journal routing)",
     ),
     copy_workbook_file: bool = typer.Option(
         True,
         "--copy-workbook/--no-copy-workbook",
-        help="Copy the workbook .xlsx into the archive on changes (recommended for forensics)",
+        help="Copy saved workbook .xlsx into archive (skipped for unsaved books)",
+    ),
+    allow_multiple_watchers: bool = typer.Option(
+        False,
+        "--allow-multiple-watchers",
+        help="Do not enforce single watch process (not recommended)",
     ),
     infer_workbook: bool = typer.Option(
         True,
@@ -156,14 +164,15 @@ def watch(
         workbook_name=wb_name,
         infer_workbook=infer_workbook,
         workbook_path=workbook,
-        copy_workbook_file=bool(workbook and copy_workbook_file),
+        copy_workbook_file=copy_workbook_file,
         snapshot_style=style,
+        enforce_single_watcher=not allow_multiple_watchers,
     )
     db = watcher._resolve_db()
     if not db:
         console.print("[red]No Excel IndexedDB found.[/red]")
         raise typer.Exit(1)
-    journal_dir = (workbook_journal_dir(workbook) if workbook else default_journal_dir()) / session
+    archive_root = default_archive_root()
     console.print(f"Watching {db.sqlite}")
     if style == "rolling":
         from .paths import workbook_forensic_live_dir
@@ -173,14 +182,17 @@ def watch(
     elif style == "per-poll":
         console.print(f"  snapshots → {watcher.dest_root}")
     if not no_journal:
-        console.print(f"  journal   → {journal_dir}/events.jsonl (append-only)")
-        console.print(f"              {journal_dir}/session.tape.md (readable tape)")
+        console.print(f"  journal   → {archive_root}/<_workbook_|_unsaved_>/journal/{session}/ (fan-out)")
+        console.print("              One events.jsonl per IndexedDB chat record / workbook identity")
         if infer_workbook and workbook is None:
             console.print(f"  mappings  → {default_mapping_path()}")
     try:
         watcher.run_forever()
     except KeyboardInterrupt:
         console.print("\nStopped.")
+    except RuntimeError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -334,12 +346,166 @@ def journal_ingest(
         db = source
     journal_root = workbook_journal_dir(workbook) if workbook else default_journal_dir()
     wb_name = workbook.name if workbook else None
-    n = ingest_sqlite(db, journal_root=journal_root, session_key=session, workbook_name=wb_name)
+    n = ingest_sqlite(
+        db,
+        journal_root=journal_root if workbook else None,
+        session_key=session,
+        workbook_name=wb_name,
+        fan_out=workbook is None,
+    )
     session_dir = journal_root / session
     console.print(f"[green]+{n}[/green] events → {session_dir / 'events.jsonl'}")
     tape = session_dir / "session.tape.md"
     if tape.is_file():
         console.print(f"[green]Tape:[/green] {tape}")
+
+
+@app.command("migrate-workbook")
+def migrate_workbook(
+    workbook: Annotated[
+        Path,
+        typer.Argument(help="Saved workbook path (.xlsx) to migrate archive data into"),
+    ],
+    from_unsaved: str | None = typer.Option(
+        None,
+        "--from-unsaved",
+        help="Previous unsaved Excel name (e.g. Book3). Default: only matching _unsaved_* folder",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would happen without moving files"),
+    use_active: bool = typer.Option(
+        False,
+        "--use-active",
+        help="Use active Excel workbook save transition (unsaved name → this path)",
+    ),
+) -> None:
+    """Move `_unsaved_<name>/` archive tree to the encoded folder for a saved workbook path."""
+    archive_root = default_archive_root()
+    wb_path = workbook.expanduser()
+
+    if use_active:
+        active = resolve_active_workbook()
+        if not active or not active.saved or active.path is None:
+            console.print("[red]Active workbook is not saved or Excel is not running.[/red]")
+            raise typer.Exit(1)
+        if active.path.resolve() != wb_path.resolve():
+            console.print(
+                f"[yellow]Warning:[/yellow] active path {active.path} differs from argument {wb_path}"
+            )
+        # Cannot know previous unsaved name without watch state; require --from-unsaved
+        if not from_unsaved:
+            console.print("[red]--from-unsaved NAME is required with --use-active[/red]")
+            raise typer.Exit(1)
+
+    unsaved_name = from_unsaved
+    if not unsaved_name:
+        candidates = find_unsaved_roots(archive_root)
+        if len(candidates) == 1:
+            unsaved_name = candidates[0][0]
+            console.print(f"[dim]Using only unsaved archive: {candidates[0][1].name}[/dim]")
+        elif not candidates:
+            console.print("[red]No _unsaved_* archive folders found. Use --from-unsaved Book3[/red]")
+            raise typer.Exit(1)
+        else:
+            console.print("[red]Multiple unsaved archives; specify --from-unsaved[/red]")
+            for name, folder in candidates:
+                console.print(f"  - {name} → {folder}")
+            raise typer.Exit(1)
+
+    report = migrate_unsaved_to_path(
+        unsaved_name,
+        wb_path,
+        archive_root=archive_root,
+        dry_run=dry_run,
+    )
+    table = Table("field", "value")
+    table.add_row("unsaved_name", report.unsaved_name)
+    table.add_row("source", str(report.source_root))
+    table.add_row("dest", str(report.dest_root))
+    table.add_row("ok", str(report.ok))
+    console.print(table)
+    for note in report.notes:
+        console.print(f"- {note}")
+    if dry_run:
+        console.print("[dim]Dry run — no files changed[/dim]")
+    elif report.ok:
+        console.print(
+            f"[green]Done.[/green] Future ingest for '{unsaved_name}' routes to {report.dest_root.name}"
+        )
+    else:
+        raise typer.Exit(1)
+
+
+@app.command("analyze-session")
+def analyze_session(
+    source: Annotated[
+        Path,
+        typer.Argument(help="Journal session dir or events.jsonl"),
+    ],
+    local_workbook: str | None = typer.Option(
+        None,
+        "--local-workbook",
+        help="Session local workbook filename (e.g. EF Shop Model DD.xlsx) for hint context",
+    ),
+    json_out: Path | None = typer.Option(
+        None,
+        "--json",
+        help="Write full analysis JSON to this path",
+    ),
+) -> None:
+    """Print peer registry, workbook_hint lane counts, and sample timeline."""
+    if source.is_dir():
+        events_path = source / "events.jsonl"
+        if not events_path.is_file():
+            events_path = source
+    else:
+        events_path = source
+
+    events = load_events_jsonl(events_path) if events_path.suffix == ".jsonl" else []
+    if not events and source.is_dir() and (source / "state.json").is_file():
+        from .render_tape import load_events_from_session
+
+        events = load_events_from_session(source)
+
+    if not events:
+        console.print(f"[red]No events found at[/red] {source}")
+        raise typer.Exit(1)
+
+    analysis = analyze_session_events(events, local_workbook=local_workbook)
+    table = Table("workbook_hint", "count")
+    for hint, count in sorted(analysis.hint_counts.items(), key=lambda x: (-x[1], x[0])):
+        table.add_row(hint, str(count))
+    console.print("[bold]Workbook hints[/bold]")
+    console.print(table)
+
+    lane_table = Table("lane", "count")
+    for lane, count in sorted(analysis.lane_counts.items(), key=lambda x: (-x[1], x[0])):
+        lane_table.add_row(lane, str(count))
+    console.print("\n[bold]Lanes[/bold]")
+    console.print(lane_table)
+
+    if analysis.registry.agents:
+        reg = Table("agent_id", "workbook")
+        for agent_id, wb in sorted(analysis.registry.agents.items()):
+            reg.add_row(agent_id, wb)
+        console.print("\n[bold]Peer registry[/bold]")
+        console.print(reg)
+
+    if analysis.send_message_timeline:
+        console.print("\n[bold]send_message timeline[/bold]")
+        for item in analysis.send_message_timeline[:20]:
+            console.print(
+                f"  #{item['index']} → {item.get('agent_id')} "
+                f"({item.get('workbook')}) hint={item.get('hint')}"
+            )
+
+    if analysis.sample_events:
+        console.print("\n[bold]Sample attributed events[/bold]")
+        for sample in analysis.sample_events:
+            console.print(f"  {sample}")
+
+    if json_out:
+        json_out.write_text(json.dumps(analysis.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        console.print(f"\n[green]Wrote[/green] {json_out}")
 
 
 @app.command()
@@ -354,16 +520,26 @@ def tape(
         "-o",
         help="Output .md path (default: alongside source)",
     ),
+    split_workbooks: bool = typer.Option(
+        False,
+        "--split-workbooks",
+        help="Also write session.ef.tape.md and session.gp.tape.md filtered views",
+    ),
 ) -> None:
     """Render LLM-optimized session.tape.md from export JSON or journal."""
     if source.is_dir() and (source / "state.json").is_file():
-        out = write_session_tape(source)
+        out = write_session_tape(source, split_workbook_tapes=split_workbooks)
     elif source.suffix == ".json" and source.is_file():
         out = export_json_to_tape(source, output)
     else:
         console.print("[red]Expected export .json or journal session directory[/red]")
         raise typer.Exit(1)
     console.print(f"[green]Wrote[/green] {out}")
+    if split_workbooks and source.is_dir():
+        for suffix in ("ef", "gp"):
+            p = source / f"session.{suffix}.tape.md"
+            if p.is_file():
+                console.print(f"[green]Wrote[/green] {p}")
 
 
 @app.command()

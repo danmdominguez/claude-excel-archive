@@ -10,6 +10,8 @@ from typing import Any
 
 from .snip import SNIP_MARKER, is_snipped_content
 from .config_excel import parse_config_dict, ExcelArchiveConfig
+from .journal import parse_initial_state
+from .workbook_attribution import build_agent_registry, filter_events_by_hint
 
 ID_TAG_RE = re.compile(r"\[id:([a-z0-9]+)\]")
 
@@ -51,6 +53,8 @@ def _classify_user_message(text: str) -> str:
         return "changes"
     if t.startswith("<uploaded_files>"):
         return "upload"
+    if t.startswith("<initial_state>"):
+        return "workbook_state"
     if t.startswith("[id:") and len(t) < 24:
         return "id-tag"
     if SNIP_MARKER in t:
@@ -60,6 +64,27 @@ def _classify_user_message(text: str) -> str:
 
 def _md_escape_block(text: str) -> str:
     return text.replace("```", "'''")
+
+
+def _summarize_workbook_state(ev: dict[str, Any]) -> list[str]:
+    """Readable summary for `<initial_state>` blocks."""
+    parsed = ev.get("initial_state")
+    if not isinstance(parsed, dict):
+        parsed = parse_initial_state(ev.get("text") or "")
+    if isinstance(parsed, dict):
+        fn = parsed.get("fileName") or "?"
+        sheets = parsed.get("sheetsMetadata")
+        n_sheets = len(sheets) if isinstance(sheets, list) else "?"
+        lines = [f"- **Workbook:** `{fn}`", f"- **Sheets:** {n_sheets}"]
+        if isinstance(sheets, list) and sheets:
+            names = [s.get("name") for s in sheets[:8] if isinstance(s, dict) and s.get("name")]
+            if names:
+                lines.append(f"- **Sheet names:** {', '.join(f'`{n}`' for n in names)}")
+        return lines
+    text = (ev.get("text") or "").strip()
+    if len(text) > 400:
+        return _details("Show initial_state raw", [f"```\n{text[:4000]}\n```"])
+    return [f"```\n{text}\n```"]
 
 
 def _details(summary: str, body_lines: list[str]) -> list[str]:
@@ -78,7 +103,9 @@ def _peer_summary(events: list[dict[str, Any]]) -> list[str]:
     Build a peer-linking section from:
     - send_message tool_use inputs (agent_id)
     - conductor_context / connected_peers message blocks
+    - agent_id → workbook registry table
     """
+    registry = build_agent_registry(events)
     send_turns: dict[str, list[int]] = {}
     conductor_blocks = 0
     peers_blocks = 0
@@ -86,7 +113,7 @@ def _peer_summary(events: list[dict[str, Any]]) -> list[str]:
     for ev in events:
         if ev.get("kind") == "tool_use" and ev.get("name") == "send_message":
             inp = ev.get("input") or {}
-            agent_id = inp.get("agent_id")
+            agent_id = inp.get("agent_id") or ev.get("target_agent_id")
             if isinstance(agent_id, str) and agent_id:
                 send_turns.setdefault(agent_id, []).append(int(ev.get("seq") or 0))
         if ev.get("kind") == "message":
@@ -97,11 +124,16 @@ def _peer_summary(events: list[dict[str, Any]]) -> list[str]:
             elif mclass == "peers":
                 peers_blocks += 1
 
-    if not send_turns and conductor_blocks == 0 and peers_blocks == 0:
+    if not send_turns and conductor_blocks == 0 and peers_blocks == 0 and not registry.agents:
         return []
 
     lines: list[str] = []
     lines.append("## Peers")
+    lines.append("")
+    lines.append(
+        "> **Legend:** `local` = this taskpane workbook · `peer` = cross-agent traffic "
+        "(`send_message`, `conductor_context`, `<connected_peers>`)"
+    )
     lines.append("")
     lines.append("```mermaid")
     lines.append("flowchart LR")
@@ -109,6 +141,14 @@ def _peer_summary(events: list[dict[str, Any]]) -> list[str]:
     lines.append('  peerAgent -->|"conductor update"| localSession')
     lines.append("```")
     lines.append("")
+    if registry.agents:
+        lines.append("### Agent registry")
+        lines.append("")
+        lines.append("| agent_id | workbook |")
+        lines.append("|----------|----------|")
+        for agent_id in sorted(registry.agents.keys()):
+            lines.append(f"| `{agent_id}` | {registry.agents[agent_id]} |")
+        lines.append("")
     if peers_blocks:
         lines.append(f"- **Connected peers blocks**: {peers_blocks}")
     if conductor_blocks:
@@ -120,7 +160,11 @@ def _peer_summary(events: list[dict[str, Any]]) -> list[str]:
         for agent_id in sorted(send_turns.keys()):
             turns = [t for t in send_turns[agent_id] if t]
             turns_txt = ", ".join(f"Turn {t}" for t in turns[:10]) + ("…" if len(turns) > 10 else "")
-            lines.append(f"- **`{agent_id}`**: {len(turns)} message(s)" + (f" ({turns_txt})" if turns_txt else ""))
+            wb = registry.workbook_for(agent_id) or "?"
+            lines.append(
+                f"- **`{agent_id}`** → {wb}: {len(turns)} message(s)"
+                + (f" ({turns_txt})" if turns_txt else "")
+            )
     lines.append("")
     lines.append("---")
     lines.append("")
@@ -407,6 +451,8 @@ def render_tape_markdown(
                         lines.append(f"> {_md_escape_block(para[:500])}")
                 else:
                     lines.append("> *(placeholder only)*")
+            elif mclass == "workbook_state":
+                lines.extend(_summarize_workbook_state(ev))
             elif mclass in ("context", "conductor", "peers", "changes", "upload", "id-tag"):
                 lines.append(f"```\n{text.strip()}\n```")
             else:
@@ -469,6 +515,7 @@ def write_session_tape(
     title: str | None = None,
     meta: dict[str, Any] | None = None,
     source_note: str | None = None,
+    split_workbook_tapes: bool = False,
 ) -> Path:
     """Regenerate session.tape.md and session.full.tape.md from journal state."""
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -505,7 +552,45 @@ def write_session_tape(
     out_full = session_dir / "session.full.tape.md"
     out_trunc.write_text(md_trunc, encoding="utf-8")
     out_full.write_text(md_full, encoding="utf-8")
+
+    if split_workbook_tapes:
+        _write_split_workbook_tapes(
+            session_dir,
+            events,
+            meta=meta,
+            source_note=source_note,
+            cfg=cfg,
+            artifacts=artifacts,
+        )
     return out_trunc
+
+
+def _write_split_workbook_tapes(
+    session_dir: Path,
+    events: list[dict[str, Any]],
+    *,
+    meta: dict[str, Any] | None,
+    source_note: str | None,
+    cfg: ExcelArchiveConfig,
+    artifacts: Path,
+) -> None:
+    """Optional EF/GP filtered views (requires workbook_hint on events)."""
+    for hint, suffix in (("ef", "ef"), ("gp", "gp")):
+        filtered = filter_events_by_hint(events, hint)
+        if not filtered:
+            continue
+        note = (source_note or "") + f" Filtered view: workbook_hint={hint}."
+        md = render_tape_markdown(
+            filtered,
+            title=f"Session — {suffix.upper()} lane",
+            meta=meta,
+            artifacts_dir=artifacts if any(e.get("kind") == "tool_result" for e in filtered) else None,
+            source_note=note.strip(),
+            mode="truncated",
+            truncate_tool_result_chars=cfg.tape.truncate_tool_result_chars,
+            truncate_tool_code_chars=cfg.tape.truncate_tool_code_chars,
+        )
+        (session_dir / f"session.{suffix}.tape.md").write_text(md, encoding="utf-8")
 
 
 def export_json_to_tape(

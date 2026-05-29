@@ -38,7 +38,12 @@ def test_extract_events_from_scratch_blob():
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
-        n = ingest_sqlite(SCRATCH_SQLITE, journal_root=Path(tmp), session_key="t")
+        n = ingest_sqlite(
+            SCRATCH_SQLITE,
+            journal_root=Path(tmp),
+            session_key="t",
+            fan_out=False,
+        )
         assert n > 100
         state = JournalState.load(Path(tmp) / "t" / "state.json")
         assert len(state.tool_uses) > 50

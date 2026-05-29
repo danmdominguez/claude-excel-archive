@@ -83,6 +83,51 @@ excel-archive watch --infer-workbook --session main
 
 When inference is enabled and a single `.xlsx` name dominates, `excel-archive` stores a remembered mapping in `~/Documents/ExcelArchive/mappings.json` keyed by the IndexedDB origin, so future snapshots can be named consistently.
 
+### Unsaved workbooks (Book3) and save-as migration
+
+While a workbook is unsaved, capture goes to `~/Documents/ExcelArchive/_unsaved_<Name>/` (for example `_unsaved_Book3/`).
+
+When you **Save As** to a real path:
+
+- **`watch`** detects the transition (unsaved active book → saved with path) and moves the archive folder to the encoded path directory automatically.
+- Or run manually:
+
+```bash
+excel-archive migrate-workbook "/full/path/MyModel.xlsx" --from-unsaved Book3
+excel-archive migrate-workbook "/full/path/MyModel.xlsx" --dry-run  # preview
+```
+
+After migration, `~/Documents/ExcelArchive/workbook_aliases.json` maps `Book3` → that path so IndexedDB rows whose `initial_state.fileName` is still `Book3` continue appending to the saved workbook folder (not a second `_unsaved_Book3/` tree).
+
+### Menu bar app (test before DMG)
+
+Fastest loop — run from source (menu bar icon, no Dock tile):
+
+```bash
+cd claude-excel-archive
+chmod +x scripts/run_menu_bar_dev.sh
+./scripts/run_menu_bar_dev.sh
+```
+
+Or after `pip install -e ".[app]"`:
+
+```bash
+excel-archive-app
+```
+
+Menu actions: **Start/Stop Watching**, **Open Latest Session**, **Open Archive Folder**, **Rebuild Index**. Watch uses fan-out journals (no `--workbook` required).
+
+**Bundled `.app` for realistic testing** (embedded Python via py2app):
+
+```bash
+./scripts/build_app.sh
+open "dist/Excel Archive.app"
+```
+
+Grant **Full Disk Access** to Terminal (dev script) or to **Excel Archive.app** (bundle) if journals stay empty.
+
+**DMG later:** sign `dist/Excel Archive.app` with Developer ID, `notarytool submit`, staple, then `create-dmg` or `hdiutil` — same artifact as the test `.app`.
+
 ### Run continuously (LaunchAgent)
 
 If you want this running in the background (recommended for long sessions), install a LaunchAgent:

@@ -26,12 +26,23 @@ class TapeRef:
 
 
 def is_workbook_archive_root(path: Path) -> bool:
-    """Encoded workbook folder under the archive root."""
+    """Encoded workbook folder under the archive root (_Users_…, _workbook_…, _unsaved_…)."""
     return path.is_dir() and path.name.startswith("_") and (
         (path / "journal").is_dir()
         or (path / "snapshots").is_dir()
         or (path / "forensic").is_dir()
     )
+
+
+def workbook_display_name(encoded_folder: str) -> str:
+    """Human label for an archive folder name."""
+    if encoded_folder.startswith("_unsaved_"):
+        return f"{encoded_folder.removeprefix('_unsaved_')} (unsaved)"
+    if encoded_folder.startswith("_workbook_"):
+        return encoded_folder.removeprefix("_workbook_")
+    if encoded_folder.startswith("_Users_") or encoded_folder.startswith("_users_"):
+        return encoded_folder.replace("_", "/").lstrip("/")
+    return encoded_folder
 
 
 def discover_workbook_roots(archive_root: Path | None = None) -> list[Path]:
@@ -154,9 +165,11 @@ def generate_archive_root_index_md(archive_root: Path | None = None) -> str:
                 t0 = wb_tapes[0]
                 ts = datetime.utcfromtimestamp(t0.updated_at).isoformat() + "Z"
                 rel = t0.tape.relative_to(root)
-                lines.append(f"- **{wb.name}** — updated `{ts}` — [`{rel}`]({rel})")
+                label = workbook_display_name(wb.name)
+                lines.append(f"- **{label}** — updated `{ts}` — [`{rel}`]({rel})")
             else:
-                lines.append(f"- **{wb.name}** — _no journal yet_ (snapshots only)")
+                label = workbook_display_name(wb.name)
+                lines.append(f"- **{label}** — _no journal yet_ (snapshots only)")
             idx = wb / "index.md"
             if idx.is_file():
                 lines.append(f"  - Workbook index: [`{idx.relative_to(root)}`]({idx.relative_to(root)})")
